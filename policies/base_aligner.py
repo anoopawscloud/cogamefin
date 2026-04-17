@@ -72,10 +72,14 @@ class InvokerAgentPolicy(AgentPolicy):
         self._agent_id = agent_id
         self._state = AgentState(
             role=role,
+            # Each agent starts exploring in a different direction
             wander_direction_idx=agent_id % len(WANDER_DIRECTIONS),
         )
         self._center = (policy_env_info.obs_height // 2,
                         policy_env_info.obs_width // 2)
+        # Quadrant preference for spreading agents across the map
+        # Agents 0-1: prefer NW, 2-3: NE, 4-5: SW, 6-7: SE
+        self._quadrant = agent_id % 4
 
         # Build tag lookups
         self._tag_name_to_id = {name: idx for idx, name in enumerate(policy_env_info.tags)}
@@ -148,18 +152,44 @@ class InvokerAgentPolicy(AgentPolicy):
     def _closest(self, tags_by_loc: dict[tuple[int, int], set[int]],
                  include: set[int],
                  require: set[int] | None = None,
-                 exclude: set[int] | None = None) -> tuple[int, int] | None:
-        """Find closest location matching tag criteria."""
-        return min(
-            (loc for loc, loc_tags in tags_by_loc.items()
-             if loc_tags & include
-             and (require is None or loc_tags & require)
-             and (exclude is None or not (loc_tags & exclude))),
-            key=lambda loc: (abs(loc[0] - self._center[0]) +
-                             abs(loc[1] - self._center[1]),
-                             loc[0], loc[1]),
-            default=None,
-        )
+                 exclude: set[int] | None = None,
+                 spread: bool = False) -> tuple[int, int] | None:
+        """Find closest location matching tag criteria.
+
+        If spread=True, prefer targets in this agent's assigned quadrant
+        by adding a penalty to targets in other quadrants.
+        """
+        matching = [
+            loc for loc, loc_tags in tags_by_loc.items()
+            if loc_tags & include
+            and (require is None or loc_tags & require)
+            and (exclude is None or not (loc_tags & exclude))
+        ]
+        if not matching:
+            return None
+
+        def _score(loc: tuple[int, int]) -> tuple[int, int, int]:
+            dist = abs(loc[0] - self._center[0]) + abs(loc[1] - self._center[1])
+            if spread:
+                # Quadrant-based spreading: agents prefer different directions
+                # 0=NW (prefer negative row, negative col from center)
+                # 1=NE (prefer negative row, positive col)
+                # 2=SW (prefer positive row, negative col)
+                # 3=SE (prefer positive row, positive col)
+                row_pref = -1 if self._quadrant < 2 else 1
+                col_pref = -1 if self._quadrant % 2 == 0 else 1
+                row_diff = loc[0] - self._center[0]
+                col_diff = loc[1] - self._center[1]
+                # Bonus (negative penalty) for targets in preferred direction
+                quadrant_bonus = 0
+                if (row_diff * row_pref > 0):
+                    quadrant_bonus -= 3
+                if (col_diff * col_pref > 0):
+                    quadrant_bonus -= 3
+                return (quadrant_bonus, dist, loc[0])
+            return (0, dist, loc[0])
+
+        return min(matching, key=_score)
 
     def _action(self, name: str) -> Action:
         return Action(name=name if name in self._action_set else self._fallback)
@@ -336,14 +366,14 @@ class InvokerAgentPolicy(AgentPolicy):
                 return self._move_toward(target, tags_by_loc)
             return self._explore(tags_by_loc)
 
-        # Step 3: Go to junction and align
+        # Step 3: Go to junction and align (spread across map)
         if role == "scrambler":
             target = self._closest(tags_by_loc, self._junction_tags,
-                                   require=enemy_team)
+                                   require=enemy_team, spread=True)
         else:
             # Aligner: target neutral or enemy junctions (not own team)
             target = self._closest(tags_by_loc, self._junction_tags,
-                                   exclude=own_team)
+                                   exclude=own_team, spread=True)
 
         if target:
             self._state.phase = AgentPhase.SEEK_JUNCTION
