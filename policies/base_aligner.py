@@ -54,8 +54,9 @@ class AgentState:
     phase: AgentPhase = AgentPhase.SEEK_GEAR
     wander_direction_idx: int = 0
     steps_in_phase: int = 0
-    last_location: tuple[int, int] | None = None
     stuck_counter: int = 0
+    on_target_steps: int = 0
+    total_steps: int = 0
 
 
 class InvokerAgentPolicy(AgentPolicy):
@@ -165,13 +166,21 @@ class InvokerAgentPolicy(AgentPolicy):
 
     def _move_toward(self, target: tuple[int, int],
                      tags_by_loc: dict[tuple[int, int], set[int]]) -> Action:
-        """Move toward target using BFS pathfinding (same as StarterPolicy)."""
+        """Move toward target using BFS pathfinding."""
         dr = target[0] - self._center[0]
         dc = target[1] - self._center[1]
 
         if dr == 0 and dc == 0:
-            # On target — try a vibe action to interact
-            return self._cycle_vibe()
+            # On target — cycle vibes to interact, stay for multiple steps
+            self._state.on_target_steps += 1
+            if self._state.on_target_steps <= len(self._vibe_actions) * 2:
+                return self._cycle_vibe()
+            # Exhausted all vibe options — move away and try elsewhere
+            self._state.on_target_steps = 0
+            return self._explore(tags_by_loc)
+
+        # Not on target — reset counter
+        self._state.on_target_steps = 0
 
         # Adjacent — move directly
         if abs(dr) + abs(dc) == 1:
@@ -263,12 +272,18 @@ class InvokerAgentPolicy(AgentPolicy):
         role = self._state.role
 
         self._state.steps_in_phase += 1
+        self._state.total_steps += 1
 
-        # Phase timeout — if stuck in a phase too long, rotate wander direction
-        if self._state.steps_in_phase > 200:
+        # Stuck detection — rotate wander direction periodically
+        if self._state.steps_in_phase > 150:
             self._state.wander_direction_idx = (
                 self._state.wander_direction_idx + 1) % len(WANDER_DIRECTIONS)
             self._state.steps_in_phase = 0
+
+        # Periodically change exploration direction based on total steps
+        if self._state.total_steps % 500 == 0:
+            self._state.wander_direction_idx = (
+                self._state.wander_direction_idx + 1) % len(WANDER_DIRECTIONS)
 
         # --- Miner role ---
         if role == "miner":
