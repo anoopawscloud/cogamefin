@@ -102,9 +102,20 @@ class InvokerAgentPolicy(AgentPolicy):
         self._action_set = set(all_actions)
         self._fallback = "noop" if "noop" in self._action_set else all_actions[0]
 
-        # Identify vibe action names for cycling
+        # Vibe action names for targeted use
         self._vibe_actions = policy_env_info.vibe_action_names
         self._vibe_cycle_idx = 0
+
+        # Map role to the vibe action needed to pick up that gear
+        self._role_vibe = {
+            "aligner": "change_vibe_aligner",
+            "miner": "change_vibe_miner",
+            "scrambler": "change_vibe_scrambler",
+            "scout": "change_vibe_scout",
+        }
+        self._heart_vibe = "change_vibe_heart"
+        self._gear_vibe = "change_vibe_gear"
+        self._default_vibe = "change_vibe_default"
 
     def _resolve_tags(self, names: list[str]) -> set[int]:
         tag_ids: set[int] = set()
@@ -201,11 +212,11 @@ class InvokerAgentPolicy(AgentPolicy):
         dc = target[1] - self._center[1]
 
         if dr == 0 and dc == 0:
-            # On target — cycle vibes to interact, stay for multiple steps
+            # On target — use targeted vibe based on current phase
             self._state.on_target_steps += 1
-            if self._state.on_target_steps <= len(self._vibe_actions) * 2:
-                return self._cycle_vibe()
-            # Exhausted all vibe options — move away and try elsewhere
+            if self._state.on_target_steps <= 10:
+                return self._targeted_vibe()
+            # Exhausted attempts — move away and try elsewhere
             self._state.on_target_steps = 0
             return self._explore(tags_by_loc)
 
@@ -268,6 +279,36 @@ class InvokerAgentPolicy(AgentPolicy):
         action_name = self._vibe_actions[self._vibe_cycle_idx % len(self._vibe_actions)]
         self._vibe_cycle_idx += 1
         return self._action(action_name)
+
+    def _targeted_vibe(self) -> Action:
+        """Use the appropriate vibe action for the current phase."""
+        phase = self._state.phase
+        role = self._state.role
+        step = self._state.on_target_steps
+
+        if phase == AgentPhase.SEEK_GEAR:
+            # At gear station — use role-specific vibe to pick up gear
+            vibe = self._role_vibe.get(role, self._gear_vibe)
+            if step <= 3:
+                return self._action(vibe)
+            # Alternate with gear vibe
+            return self._action(self._gear_vibe)
+
+        elif phase == AgentPhase.SEEK_HEARTS:
+            # At hub/chest — use heart vibe to collect hearts
+            if step <= 3:
+                return self._action(self._heart_vibe)
+            return self._action(self._default_vibe)
+
+        elif phase == AgentPhase.SEEK_JUNCTION:
+            # At junction — use aligner vibe to align
+            if step <= 3:
+                return self._action(self._role_vibe.get(role, "change_vibe_aligner"))
+            # Also try default vibe
+            return self._action(self._default_vibe)
+
+        # Fallback: cycle through all vibes
+        return self._cycle_vibe()
 
     def _explore(self, tags_by_loc: dict[tuple[int, int], set[int]]) -> Action:
         """Explore in a fixed direction, rotating when blocked."""
