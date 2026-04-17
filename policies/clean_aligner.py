@@ -88,6 +88,9 @@ class InvokerAgentPolicy(AgentPolicy):
         self._extractor_tags = self._resolve_tags(
             [f"{e}_extractor" for e in ELEMENTS])
 
+        # Tags that actually block movement (walls, agents, ships)
+        self._blocking_tags = self._resolve_tags(["wall", "agent", "ship"])
+
         self._role_station_tags = {}
         for r in ("miner", "aligner", "scrambler", "scout"):
             self._role_station_tags[r] = self._resolve_tags([r, f"c:{r}"])
